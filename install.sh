@@ -112,17 +112,20 @@ if [ -f "${COMPOSE_DIR}/docker-compose.yml" ]; then
 fi
 APP_URL="http://localhost:${APP_PORT}"
 
-msg() { zenity --info --title "$APP_NAME" --text "$1" 2>/dev/null || notify-send "$APP_NAME" "$1" 2>/dev/null || echo "$1"; }
-err() { zenity --error --title "$APP_NAME" --text "$1" 2>/dev/null || notify-send "$APP_NAME" "$1" --urgency=critical 2>/dev/null || echo "Błąd: $1"; }
+log() { echo "[$(date +%H:%M:%S)] $*"; }
+msg() { zenity --info --title "$APP_NAME" --text "$1" 2>/dev/null || notify-send "$APP_NAME" "$1" 2>/dev/null || log "$1"; }
+err() { zenity --error --title "$APP_NAME" --text "$1" 2>/dev/null || notify-send "$APP_NAME" "$1" --urgency=critical 2>/dev/null || { log "BŁĄD: $1"; exit 1; }; }
 
 cd "$INSTALL_DIR" || { err "Nie znaleziono katalogu: $INSTALL_DIR"; exit 1; }
 
+log "=== [1/6] Sprawdzanie Dockera ==="
 if ! systemctl is-active --quiet docker 2>/dev/null; then
-    msg "Uruchamiam Dockera..."
+    log "Uruchamiam Docker..."
     sudo systemctl start docker 2>/dev/null
     sleep 2
 fi
 
+log "=== [2/6] Przygotowanie .env ==="
 ENV_FILE=".env"
 ENV_EXAMPLE=""
 [ -f ".env.example" ] && ENV_EXAMPLE=".env.example"
@@ -131,43 +134,44 @@ ENV_EXAMPLE=""
 
 if [ ! -f "$ENV_FILE" ] && [ -n "$ENV_EXAMPLE" ]; then
     cp "$ENV_EXAMPLE" "$ENV_FILE"
-    if command -v zenity &>/dev/null; then
-        RESULT=$(zenity --forms --title "$APP_NAME - Konfiguracja" --text "Wpisz klucze API (możesz pominąć):" \
-            --add-entry "KIE API Key (kie.ai)" --add-entry "OpenRouter API Key (openrouter.ai)" 2>/dev/null)
-        if [ -n "$RESULT" ]; then
-            KIE=$(echo "$RESULT" | cut -d'|' -f1 | tr -d '\n\r')
-            OPENROUTER=$(echo "$RESULT" | cut -d'|' -f2 | tr -d '\n\r')
-            [ -n "$KIE" ] && sed -i "s|^KIE_API_KEY=.*|KIE_API_KEY=$KIE|" "$ENV_FILE" 2>/dev/null
-            [ -n "$OPENROUTER" ] && sed -i "s|^OPENROUTER_API_KEY=.*|OPENROUTER_API_KEY=$OPENROUTER|" "$ENV_FILE" 2>/dev/null
-        fi
-    fi
-    msg "Konfiguracja zapisana. Edytuj $ENV_FILE gdy potrzeba."
+    sed -i 's/^KIE_API_KEY=.*/KIE_API_KEY=/' "$ENV_FILE" 2>/dev/null || true
+    sed -i 's/^OPENROUTER_API_KEY=.*/OPENROUTER_API_KEY=/' "$ENV_FILE" 2>/dev/null || true
+    log "Utworzono .env z pustymi kluczami – uzupełnij w panelu F2"
 fi
 
+log "=== [3/6] Aktualizacja repozytorium ==="
 HAD_CHANGES=false
 if [ -d ".git" ] && [ -f "$DEPLOY_KEY_PATH" ]; then
     export GIT_SSH_COMMAND="ssh -i '$DEPLOY_KEY_PATH' -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes"
     BEFORE=$(git rev-parse HEAD 2>/dev/null || true)
     git fetch origin deploy 2>/dev/null || git fetch origin 2>/dev/null || true
     git pull origin deploy 2>/dev/null || git pull origin main 2>/dev/null || git pull origin master 2>/dev/null || true
-    AFTER=$(git rev-parse HEAD 2>/dev/null || true)
     unset GIT_SSH_COMMAND
+    AFTER=$(git rev-parse HEAD 2>/dev/null || true)
     [ "$BEFORE" != "$AFTER" ] && HAD_CHANGES=true
 fi
 
 cd "$COMPOSE_DIR" || { err "Nie znaleziono docker-compose."; exit 1; }
 
-[ "$HAD_CHANGES" = true ] && ( docker compose build 2>/dev/null || sudo docker compose build 2>/dev/null || true )
+log "=== [4/6] Budowanie obrazów Docker ==="
+if ! docker compose build 2>&1; then
+    log "Próba z sudo..."
+    sudo docker compose build 2>&1
+fi
 
+log "=== [5/6] Uruchamianie kontenerów ==="
 if ! docker compose up -d 2>/dev/null; then
     sudo docker compose up -d 2>/dev/null || { err "Nie można uruchomić Dockera."; exit 1; }
 fi
 
+log "=== [6/6] Oczekiwanie na gotowość ==="
 for i in $(seq 1 45); do
     curl -s "$APP_URL" >/dev/null 2>&1 && break
+    log "  Czekam... ($i/45)"
     sleep 2
 done
 
+log "Otwieram przeglądarkę..."
 if command -v chromium-browser &>/dev/null; then
     chromium-browser --kiosk "$APP_URL" --noerrdialogs 2>/dev/null &
 elif command -v chromium &>/dev/null; then
@@ -179,6 +183,9 @@ elif command -v firefox &>/dev/null; then
 else
     xdg-open "$APP_URL" 2>/dev/null || sensible-browser "$APP_URL" 2>/dev/null || msg "Otwórz: $APP_URL"
 fi
+
+log "Gotowe."
+[ -t 0 ] 2>/dev/null && read -r -p "Naciśnij Enter aby zamknąć..."
 LAUNCHER_EOF
     chmod +x "$LAUNCHER_SCRIPT"
     echo -e "${GREEN}✓ Utworzono start-app-fullscreen.sh${NC}"
@@ -202,7 +209,7 @@ Comment=Uruchom Prompt Master (fullscreen)
 Exec=${INSTALL_DIR}/scripts/start-app-fullscreen.sh
 Icon=${ICON_PATH}
 Categories=Application;Development;
-Terminal=false
+Terminal=true
 StartupNotify=true
 Keywords=prompt;ai;docker;
 EOF
