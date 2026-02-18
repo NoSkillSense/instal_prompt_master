@@ -193,6 +193,29 @@ else
     chmod +x "$LAUNCHER_SCRIPT"
 fi
 
+# Skrypt restart – zatrzymaj i uruchom od zera
+RESTART_SCRIPT="${INSTALL_DIR}/scripts/start-app-restart.sh"
+if [ ! -f "$RESTART_SCRIPT" ]; then
+    cat > "$RESTART_SCRIPT" << 'RESTART_EOF'
+#!/bin/bash
+INSTALL_DIR="${HOME}/prompt_master"
+log() { echo "[$(date +%H:%M:%S)] $*"; }
+err() { zenity --error --title "Prompt Master" --text "$1" 2>/dev/null || { log "BŁĄD: $1"; exit 1; }; }
+cd "$INSTALL_DIR" || { err "Nie znaleziono: $INSTALL_DIR"; exit 1; }
+COMPOSE_DIR="$INSTALL_DIR"
+[ -f "${INSTALL_DIR}/docker-compose.yml" ] || COMPOSE_DIR="${INSTALL_DIR}/backend"
+log "=== Restart – zatrzymuję kontenery ==="
+cd "$COMPOSE_DIR" || exit 1
+docker compose down 2>/dev/null || sudo docker compose down 2>/dev/null || true
+log "Uruchamiam pełny start..."
+exec "${INSTALL_DIR}/scripts/start-app-fullscreen.sh"
+RESTART_EOF
+    chmod +x "$RESTART_SCRIPT"
+    echo -e "${GREEN}✓ Utworzono start-app-restart.sh${NC}"
+else
+    chmod +x "$RESTART_SCRIPT"
+fi
+
 # 3. PromptMaster.desktop
 DESKTOP_ENTRY="${HOME}/.local/share/applications/PromptMaster.desktop"
 mkdir -p "${HOME}/.local/share/applications"
@@ -218,9 +241,31 @@ fi
 cp "$DESKTOP_ENTRY" "${HOME}/Desktop/PromptMaster.desktop"
 chmod +x "${HOME}/Desktop/PromptMaster.desktop"
 gio set "${HOME}/Desktop/PromptMaster.desktop" metadata::trusted true 2>/dev/null || true
+
+# Ikona restart – gdy coś poszło nie tak
+if [ -f "${INSTALL_DIR}/PromptMasterRestart.desktop" ]; then
+    sed "s|{{INSTALL_DIR}}|${INSTALL_DIR}|g" "${INSTALL_DIR}/PromptMasterRestart.desktop" > "${HOME}/.local/share/applications/PromptMasterRestart.desktop"
+else
+    cat > "${HOME}/.local/share/applications/PromptMasterRestart.desktop" << EOF
+[Desktop Entry]
+Type=Application
+Name=Prompt Master (Restart)
+Comment=Zatrzymaj i uruchom od zera – gdy coś poszło nie tak
+Exec=${INSTALL_DIR}/scripts/start-app-restart.sh
+Icon=${ICON_PATH}
+Categories=Application;Development;
+Terminal=true
+StartupNotify=true
+Keywords=prompt;ai;docker;restart;
+EOF
+fi
+cp "${HOME}/.local/share/applications/PromptMasterRestart.desktop" "${HOME}/Desktop/PromptMasterRestart.desktop"
+chmod +x "${HOME}/Desktop/PromptMasterRestart.desktop"
+gio set "${HOME}/Desktop/PromptMasterRestart.desktop" metadata::trusted true 2>/dev/null || true
+
 update-desktop-database "${HOME}/.local/share/applications" 2>/dev/null || true
 
-echo -e "${GREEN}✓ PromptMaster.desktop na pulpicie${NC}"
+echo -e "${GREEN}✓ PromptMaster.desktop i PromptMasterRestart.desktop na pulpicie${NC}"
 
 # 4. Usługa systemd
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
@@ -268,6 +313,6 @@ fi
 echo ""
 echo -e "${GREEN}=== Instalacja zakończona ===${NC}"
 echo "Repo: ${INSTALL_DIR}"
-echo "Uruchom: PromptMaster.desktop na pulpicie (lub przy logowaniu)"
+echo "Uruchom: PromptMaster.desktop lub PromptMasterRestart.desktop (gdy coś poszło nie tak)"
 echo ""
 echo -e "${YELLOW}Wyloguj się i zaloguj ponownie, żeby docker działał bez sudo.${NC}"
