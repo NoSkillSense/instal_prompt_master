@@ -113,33 +113,35 @@ fi
 APP_URL="http://localhost:${APP_PORT}"
 
 log() { echo "[$(date +%H:%M:%S)] $*"; }
-msg() { zenity --info --title "$APP_NAME" --text "$1" 2>/dev/null || notify-send "$APP_NAME" "$1" 2>/dev/null || log "$1"; }
-err() { zenity --error --title "$APP_NAME" --text "$1" 2>/dev/null || notify-send "$APP_NAME" "$1" --urgency=critical 2>/dev/null || { log "BŁĄD: $1"; exit 1; }; }
+msg() { zenity --info --title "$APP_NAME" --text "$1" 2>/dev/null || log "$1"; }
+err() { zenity --error --title "$APP_NAME" --text "$1" 2>/dev/null || { log "BŁĄD: $1"; exit 1; }; }
+
+PROG_FD=""
+[ -n "$DISPLAY" ] && command -v zenity &>/dev/null && exec 3> >(zenity --progress --title="$APP_NAME" --percentage=0 --auto-close --no-cancel 2>/dev/null) && PROG_FD=3
+prog() { log "$2"; [ -n "$PROG_FD" ] && echo "$1" >&3 && echo "# $2" >&3; }
 
 cd "$INSTALL_DIR" || { err "Nie znaleziono katalogu: $INSTALL_DIR"; exit 1; }
 
-log "=== [1/6] Sprawdzanie Dockera ==="
+prog 5 "[1/6] Docker..."
 if ! systemctl is-active --quiet docker 2>/dev/null; then
-    log "Uruchamiam Docker..."
+    prog 8 "Uruchamiam Docker..."
     sudo systemctl start docker 2>/dev/null
-    sleep 2
+    for i in $(seq 1 15); do systemctl is-active --quiet docker 2>/dev/null && break; prog 10 "Czekam... ($i/15)"; sleep 1; done
 fi
 
-log "=== [2/6] Przygotowanie .env ==="
+prog 18 "[2/6] .env..."
 ENV_FILE=".env"
 ENV_EXAMPLE=""
 [ -f ".env.example" ] && ENV_EXAMPLE=".env.example"
 [ -f "env.example" ] && [ -z "$ENV_EXAMPLE" ] && ENV_EXAMPLE="env.example"
 [ -f "../.env.example" ] && [ -z "$ENV_EXAMPLE" ] && ENV_EXAMPLE="../.env.example"
-
 if [ ! -f "$ENV_FILE" ] && [ -n "$ENV_EXAMPLE" ]; then
     cp "$ENV_EXAMPLE" "$ENV_FILE"
     sed -i 's/^KIE_API_KEY=.*/KIE_API_KEY=/' "$ENV_FILE" 2>/dev/null || true
     sed -i 's/^OPENROUTER_API_KEY=.*/OPENROUTER_API_KEY=/' "$ENV_FILE" 2>/dev/null || true
-    log "Utworzono .env z pustymi kluczami – uzupełnij w panelu F2"
 fi
 
-log "=== [3/6] Aktualizacja repozytorium ==="
+prog 28 "[3/6] Repo..."
 HAD_CHANGES=false
 if [ -d ".git" ] && [ -f "$DEPLOY_KEY_PATH" ]; then
     export GIT_SSH_COMMAND="ssh -i '$DEPLOY_KEY_PATH' -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes"
@@ -153,25 +155,24 @@ fi
 
 cd "$COMPOSE_DIR" || { err "Nie znaleziono docker-compose."; exit 1; }
 
-log "=== [4/6] Budowanie obrazów Docker ==="
+prog 38 "[4/6] Budowanie Docker..."
 if ! docker compose build 2>&1; then
-    log "Próba z sudo..."
     sudo docker compose build 2>&1
 fi
 
-log "=== [5/6] Uruchamianie kontenerów ==="
+prog 72 "[5/6] Uruchamianie..."
 if ! docker compose up -d 2>/dev/null; then
     sudo docker compose up -d 2>/dev/null || { err "Nie można uruchomić Dockera."; exit 1; }
 fi
 
-log "=== [6/6] Oczekiwanie na gotowość ==="
+prog 82 "[6/6] Oczekiwanie..."
 for i in $(seq 1 45); do
     curl -s "$APP_URL" >/dev/null 2>&1 && break
-    log "  Czekam... ($i/45)"
+    prog $((82 + (i * 13) / 45)) "Czekam ($i/45)"
     sleep 2
 done
 
-log "Otwieram przeglądarkę..."
+prog 98 "Otwieram przeglądarkę..."
 if command -v chromium-browser &>/dev/null; then
     chromium-browser --kiosk "$APP_URL" --noerrdialogs 2>/dev/null &
 elif command -v chromium &>/dev/null; then
@@ -184,6 +185,8 @@ else
     xdg-open "$APP_URL" 2>/dev/null || sensible-browser "$APP_URL" 2>/dev/null || msg "Otwórz: $APP_URL"
 fi
 
+prog 100 "Gotowe."
+[ -n "$PROG_FD" ] && exec 3>&-
 log "Gotowe."
 [ -t 0 ] 2>/dev/null && read -r -p "Naciśnij Enter aby zamknąć..."
 LAUNCHER_EOF
