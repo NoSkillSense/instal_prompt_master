@@ -155,9 +155,14 @@ fi
 
 cd "$COMPOSE_DIR" || { err "Nie znaleziono docker-compose."; exit 1; }
 
-prog 38 "[4/6] Budowanie Docker..."
-if ! docker compose build 2>&1; then
-    sudo docker compose build 2>&1
+if [ "$HAD_CHANGES" = true ]; then
+    prog 38 "[4/6] Budowanie Docker (wykryto zmiany)..."
+    if ! docker compose build 2>&1; then
+        sudo docker compose build 2>&1
+    fi
+    prog 70 "Build zakończony"
+else
+    prog 45 "[4/6] Brak zmian – pomijam build"
 fi
 
 prog 72 "[5/6] Uruchamianie..."
