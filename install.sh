@@ -1,45 +1,39 @@
 #!/bin/bash
 set -e
 
-# Kolory dla outputu
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 echo -e "${GREEN}=== Instalator prompt_master ===${NC}"
 
-# 0. Instalacja zależności (git, Docker, Docker Compose itp.)
+# 0. Zależności
 echo ""
-echo -e "${YELLOW}Instalacja zależności systemowych...${NC}"
-
+echo -e "${YELLOW}Instalacja zależności...${NC}"
 sudo apt update -qq
 sudo apt install -y git curl ca-certificates gnupg zenity openssh-client 2>/dev/null || true
 
-# Docker - sprawdź czy już zainstalowany
 if ! command -v docker &>/dev/null; then
-    echo "Instalacja Dockera (oficjalny skrypt get.docker.com)..."
+    echo "Instalacja Dockera..."
     curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
     sudo sh /tmp/get-docker.sh
     rm -f /tmp/get-docker.sh
 fi
 
-# Użytkownik w grupie docker (bez sudo do dockera)
 sudo groupadd docker 2>/dev/null || true
 sudo usermod -aG docker "$USER" 2>/dev/null || true
 sudo systemctl enable docker 2>/dev/null || true
 sudo systemctl start docker 2>/dev/null || true
+echo -e "${GREEN}✓ Git, Docker gotowe${NC}"
 
-echo -e "${GREEN}✓ Git, Docker, Docker Compose gotowe${NC}"
-
-# 1. Pobieranie repozytorium – Deploy Key (SSH)
+# 1. Deploy Key + repo
 REPO_SSH="git@github.com:NoSkillSense/prompt_master.git"
 INSTALL_DIR="${HOME}/prompt_master"
 DEPLOY_KEY_PATH="${HOME}/.ssh/prompt_master_deploy"
 
 mkdir -p "${HOME}/.ssh"
 
-# Generuj klucz jeśli nie istnieje
 if [ ! -f "$DEPLOY_KEY_PATH" ]; then
     echo "Generowanie klucza Deploy Key..."
     ssh-keygen -t ed25519 -f "$DEPLOY_KEY_PATH" -N "" -C "prompt_master_install"
@@ -53,10 +47,7 @@ echo ""
 echo -e "${GREEN}$(cat ${DEPLOY_KEY_PATH}.pub)${NC}"
 echo ""
 echo "1. Otwórz: https://github.com/NoSkillSense/prompt_master/settings/keys"
-echo "2. Kliknij 'Add deploy key'"
-echo "3. Title: np. 'Mój komputer'"
-echo "4. Wklej powyższy klucz (Ctrl+Shift+V)"
-echo "5. Zaznacz 'Allow read access' → Add key"
+echo "2. Add deploy key → wklej powyższy klucz"
 echo ""
 read -p "Gdy dodasz klucz, naciśnij Enter..."
 
@@ -64,7 +55,6 @@ export GIT_SSH_COMMAND="ssh -i '$DEPLOY_KEY_PATH' -o StrictHostKeyChecking=accep
 
 echo "Klonowanie repozytorium do ${INSTALL_DIR} (gałąź deploy)..."
 if [ -d "$INSTALL_DIR" ]; then
-    echo "Katalog istnieje. Aktualizuję..."
     cd "$INSTALL_DIR"
     git remote set-url origin "$REPO_SSH" 2>/dev/null || true
     git pull origin deploy 2>/dev/null || git pull origin main 2>/dev/null || git pull origin master 2>/dev/null || true
@@ -78,80 +68,10 @@ unset GIT_SSH_COMMAND
 
 echo -e "${GREEN}✓ Repozytorium pobrane${NC}"
 
-# 2. Konfiguracja Ubuntu - nie zawieszaj przy zamknięciu klapki
-echo ""
-echo -e "${YELLOW}Konfiguracja Ubuntu: tryb bez zawieszania przy zamkniętej klapce...${NC}"
-
-LOGIND_CONF="/etc/systemd/logind.conf"
-LOGIND_BACKUP="${LOGIND_CONF}.bak.$(date +%Y%m%d)"
-
-if [ -f "$LOGIND_CONF" ]; then
-    # Backup
-    sudo cp "$LOGIND_CONF" "$LOGIND_BACKUP" 2>/dev/null || true
-    
-    # Zmiana HandleLidSwitch - zamknięcie klapki NIE zawiesza
-    sudo sed -i 's/^#*HandleLidSwitch=.*/HandleLidSwitch=ignore/' "$LOGIND_CONF"
-    if ! grep -q "^HandleLidSwitch=" "$LOGIND_CONF"; then
-        echo "HandleLidSwitch=ignore" | sudo tee -a "$LOGIND_CONF" > /dev/null
-    fi
-    
-    # Opcjonalnie: HandleLidSwitchExternalPower - gdy podłączony zasilacz
-    sudo sed -i 's/^#*HandleLidSwitchExternalPower=.*/HandleLidSwitchExternalPower=ignore/' "$LOGIND_CONF" 2>/dev/null || true
-    
-    sudo systemctl restart systemd-logind
-    echo -e "${GREEN}✓ Zamknięcie klapki nie będzie zawieszać systemu${NC}"
-else
-    echo -e "${RED}Nie znaleziono ${LOGIND_CONF} - może to nie jest systemd?${NC}"
-fi
-
-# 3. Skrypt do mirrorowania ekranu (uruchamiany ręcznie po podłączeniu zewnętrznego monitora)
-MIRROR_SCRIPT="${INSTALL_DIR}/scripts/mirror-display.sh"
+# 2. Ikona + launcher
 mkdir -p "${INSTALL_DIR}/scripts"
-
-cat > "$MIRROR_SCRIPT" << 'MIRROR_EOF'
-#!/bin/bash
-# Mirror wyświetlacza - ekran zewnętrzny odzwierciedla laptop
-# Uruchom po podłączeniu monitora zewnętrznego
-# UWAGA: Wymaga X11 (na Wayland xrandr nie działa)
-
-if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
-    echo "Wayland: Ustaw mirror w Ustawieniach → Ekran"
-    exit 1
-fi
-
-# Znajdź podłączone wyjścia (np. HDMI-1, DP-1, eDP-1 - wbudowany)
-OUTPUTS=$(xrandr --query | grep " connected" | cut -d' ' -f1)
-
-if [ -z "$OUTPUTS" ]; then
-    echo "Brak wykrytych wyświetlaczy"
-    exit 1
-fi
-
-# Pierwszy = zwykle wbudowany, drugi = zewnętrzny
-PRIMARY=$(echo "$OUTPUTS" | head -1)
-SECONDARY=$(echo "$OUTPUTS" | sed -n '2p')
-
-if [ -z "$SECONDARY" ]; then
-    echo "Podłącz monitor zewnętrzny i uruchom ponownie"
-    exit 1
-fi
-
-# Pobierz preferowaną rozdzielczość drugiego ekranu (zewnętrznego)
-MODE=$(xrandr --query | grep -A1 "^\s*${SECONDARY}" | grep -oP '\d+x\d+' | head -1)
-[ -z "$MODE" ] && MODE="1920x1080"
-
-# Tryb mirror - oba ekrany pokazują to samo
-xrandr --output "$PRIMARY" --mode "$MODE" --primary 2>/dev/null || xrandr --output "$PRIMARY" --auto --primary
-xrandr --output "$SECONDARY" --mode "$MODE" --same-as "$PRIMARY" 2>/dev/null || xrandr --output "$SECONDARY" --same-as "$PRIMARY"
-
-echo "Mirror włączony: $PRIMARY <-> $SECONDARY"
-MIRROR_EOF
-
-chmod +x "$MIRROR_SCRIPT"
-echo -e "${GREEN}✓ Utworzono skrypt mirror-display.sh w ${INSTALL_DIR}/scripts/${NC}"
-
-# 3b. Ikona – własna SVG (lub z repo jeśli istnieje)
 ICON_PATH="${INSTALL_DIR}/scripts/prompt-master.svg"
+
 if [ -f "${INSTALL_DIR}/prompt-master.svg" ]; then
     cp "${INSTALL_DIR}/prompt-master.svg" "$ICON_PATH"
 else
@@ -171,7 +91,6 @@ else
 ICON_EOF
 fi
 
-# 3c. Launcher start-app-fullscreen.sh – z repo lub utwórz jeśli brak (np. starsza gałąź deploy)
 LAUNCHER_SCRIPT="${INSTALL_DIR}/scripts/start-app-fullscreen.sh"
 if [ ! -f "$LAUNCHER_SCRIPT" ]; then
     cat > "$LAUNCHER_SCRIPT" << 'LAUNCHER_EOF'
@@ -213,7 +132,7 @@ ENV_EXAMPLE=""
 if [ ! -f "$ENV_FILE" ] && [ -n "$ENV_EXAMPLE" ]; then
     cp "$ENV_EXAMPLE" "$ENV_FILE"
     if command -v zenity &>/dev/null; then
-        RESULT=$(zenity --forms --title "$APP_NAME - Konfiguracja" --text "Wpisz klucze API (możesz pominąć i uzupełnić później):" \
+        RESULT=$(zenity --forms --title "$APP_NAME - Konfiguracja" --text "Wpisz klucze API (możesz pominąć):" \
             --add-entry "KIE API Key (kie.ai)" --add-entry "OpenRouter API Key (openrouter.ai)" 2>/dev/null)
         if [ -n "$RESULT" ]; then
             KIE=$(echo "$RESULT" | cut -d'|' -f1 | tr -d '\n\r')
@@ -222,7 +141,7 @@ if [ ! -f "$ENV_FILE" ] && [ -n "$ENV_EXAMPLE" ]; then
             [ -n "$OPENROUTER" ] && sed -i "s|^OPENROUTER_API_KEY=.*|OPENROUTER_API_KEY=$OPENROUTER|" "$ENV_FILE" 2>/dev/null
         fi
     fi
-    msg "Konfiguracja zapisana. Możesz edytować $ENV_FILE gdy potrzeba."
+    msg "Konfiguracja zapisana. Edytuj $ENV_FILE gdy potrzeba."
 fi
 
 HAD_CHANGES=false
@@ -238,12 +157,10 @@ fi
 
 cd "$COMPOSE_DIR" || { err "Nie znaleziono docker-compose."; exit 1; }
 
-if [ "$HAD_CHANGES" = true ]; then
-    docker compose build 2>/dev/null || sudo docker compose build 2>/dev/null || true
-fi
+[ "$HAD_CHANGES" = true ] && ( docker compose build 2>/dev/null || sudo docker compose build 2>/dev/null || true )
 
 if ! docker compose up -d 2>/dev/null; then
-    sudo docker compose up -d 2>/dev/null || { err "Nie można uruchomić Dockera. Zainstaluj: ./install.sh"; exit 1; }
+    sudo docker compose up -d 2>/dev/null || { err "Nie można uruchomić Dockera."; exit 1; }
 fi
 
 for i in $(seq 1 45); do
@@ -260,7 +177,7 @@ elif command -v google-chrome &>/dev/null; then
 elif command -v firefox &>/dev/null; then
     firefox -kiosk "$APP_URL" 2>/dev/null &
 else
-    xdg-open "$APP_URL" 2>/dev/null || sensible-browser "$APP_URL" 2>/dev/null || msg "Otwórz w przeglądarce: $APP_URL"
+    xdg-open "$APP_URL" 2>/dev/null || sensible-browser "$APP_URL" 2>/dev/null || msg "Otwórz: $APP_URL"
 fi
 LAUNCHER_EOF
     chmod +x "$LAUNCHER_SCRIPT"
@@ -269,7 +186,7 @@ else
     chmod +x "$LAUNCHER_SCRIPT"
 fi
 
-# Plik PromptMaster.desktop – z repo lub utwórz
+# 3. PromptMaster.desktop
 DESKTOP_ENTRY="${HOME}/.local/share/applications/PromptMaster.desktop"
 mkdir -p "${HOME}/.local/share/applications"
 mkdir -p "${HOME}/Desktop"
@@ -281,7 +198,7 @@ else
 [Desktop Entry]
 Type=Application
 Name=Prompt Master
-Comment=Uruchom Prompt Master w przeglądarce (fullscreen)
+Comment=Uruchom Prompt Master (fullscreen)
 Exec=${INSTALL_DIR}/scripts/start-app-fullscreen.sh
 Icon=${ICON_PATH}
 Categories=Application;Development;
@@ -296,16 +213,16 @@ chmod +x "${HOME}/Desktop/PromptMaster.desktop"
 gio set "${HOME}/Desktop/PromptMaster.desktop" metadata::trusted true 2>/dev/null || true
 update-desktop-database "${HOME}/.local/share/applications" 2>/dev/null || true
 
-echo -e "${GREEN}✓ PromptMaster.desktop na pulpicie – fullscreen, auto-update przy starcie${NC}"
+echo -e "${GREEN}✓ PromptMaster.desktop na pulpicie${NC}"
 
-# 3d. Usługa systemd – start przy logowaniu
+# 4. Usługa systemd
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
 mkdir -p "$SYSTEMD_USER_DIR"
 USER_UID=$(id -u)
 
 cat > "${SYSTEMD_USER_DIR}/prompt-master.service" << EOF
 [Unit]
-Description=Prompt Master - kiosk fullscreen przy starcie sesji
+Description=Prompt Master - kiosk przy starcie sesji
 After=graphical-session.target docker.service
 Wants=docker.service
 PartOf=graphical-session.target
@@ -323,63 +240,27 @@ EOF
 
 systemctl --user daemon-reload 2>/dev/null || true
 systemctl --user enable prompt-master.service 2>/dev/null || true
-echo -e "${GREEN}✓ Usługa systemd prompt-master – start przy logowaniu do sesji graficznej${NC}"
+echo -e "${GREEN}✓ Usługa systemd prompt-master (start przy logowaniu)${NC}"
 
-# 4. Automatyczne uruchomienie mirror przy logowaniu (opcjonalnie)
-echo ""
-echo "Czy dodać automatyczne mirrorowanie przy logowaniu? (gdy podłączony monitor) [y/N]"
-read -r ADD_AUTOSTART
-
-if [[ "$ADD_AUTOSTART" =~ ^[yY] ]]; then
-    AUTOSTART_DIR="${HOME}/.config/autostart"
-    mkdir -p "$AUTOSTART_DIR"
-    cat > "${AUTOSTART_DIR}/mirror-display.desktop" << EOF
-[Desktop Entry]
-Type=Application
-Name=Mirror Display
-Exec=${MIRROR_SCRIPT}
-Hidden=false
-NoDisplay=false
-X-GNOME-Autostart-enabled=true
-X-GNOME-Autostart-Delay=3
-EOF
-    echo -e "${GREEN}✓ Mirror będzie uruchamiany przy logowaniu${NC}"
-fi
-
-# 5. Uruchomienie aplikacji (Docker Compose)
+# 5. Opcjonalnie uruchom teraz
 echo ""
 if [ -f "${INSTALL_DIR}/docker-compose.yml" ] || [ -f "${INSTALL_DIR}/backend/docker-compose.yml" ]; then
     COMPOSE_DIR="${INSTALL_DIR}"
     [ -f "${INSTALL_DIR}/docker-compose.yml" ] || COMPOSE_DIR="${INSTALL_DIR}/backend"
-    echo "Czy uruchomić aplikację? (docker compose up -d) [y/N]"
+    echo "Uruchomić aplikację teraz? [y/N]"
     read -r RUN_APP
     if [[ "$RUN_APP" =~ ^[yY] ]]; then
         cd "$COMPOSE_DIR"
-        if [ ! -f ".env" ]; then
-            if [ -f ".env.example" ]; then cp .env.example .env; echo -e "${YELLOW}Skopiowano .env.example → .env (uzupełnij klucze API!)${NC}"
-            elif [ -f "env.example" ]; then cp env.example .env; echo -e "${YELLOW}Skopiowano env.example → .env (uzupełnij klucze API!)${NC}"
-            fi
-        fi
-        if docker compose up -d --build 2>/dev/null; then
-            echo -e "${GREEN}✓ Aplikacja uruchomiona${NC}"
-        else
-            sudo docker compose up -d --build && echo -e "${GREEN}✓ Aplikacja uruchomiona (użyto sudo - wyloguj się aby docker działał bez sudo)${NC}"
-        fi
+        [ ! -f ".env" ] && [ -f ".env.example" ] && cp .env.example .env
+        [ ! -f ".env" ] && [ -f "env.example" ] && cp env.example .env
+        docker compose up -d --build 2>/dev/null || sudo docker compose up -d --build
+        echo -e "${GREEN}✓ Aplikacja uruchomiona${NC}"
     fi
 fi
 
 echo ""
 echo -e "${GREEN}=== Instalacja zakończona ===${NC}"
 echo "Repo: ${INSTALL_DIR}"
+echo "Uruchom: PromptMaster.desktop na pulpicie (lub przy logowaniu)"
 echo ""
-echo "Uruchomienie: kliknij 'PromptMaster.desktop' na pulpicie – fullscreen, auto-update"
-echo "  (lub uruchomi się automatycznie przy logowaniu – usługa systemd)"
-echo ""
-echo "Docker: docker compose ps | docker compose logs -f"
-echo "Ręczne mirror: ${MIRROR_SCRIPT}"
-echo ""
-echo "Po zamknięciu klapki z podłączonym monitorem - system dalej działa."
-echo "Uruchom ${MIRROR_SCRIPT} aby włączyć tryb lustrzany."
-echo ""
-echo -e "${YELLOW}Uwaga: Wyloguj się i zaloguj ponownie, żeby docker działał bez sudo.${NC}"
-echo "Uwaga: Na Wayland mirror ustaw ręcznie w: Ustawienia → Ekran"
+echo -e "${YELLOW}Wyloguj się i zaloguj ponownie, żeby docker działał bez sudo.${NC}"
