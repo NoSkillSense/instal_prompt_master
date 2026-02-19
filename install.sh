@@ -107,7 +107,8 @@ elif [ -f "${INSTALL_DIR}/backend/docker-compose.yml" ]; then
     COMPOSE_DIR="${INSTALL_DIR}/backend"
 fi
 if [ -f "${COMPOSE_DIR}/docker-compose.yml" ]; then
-    DETECTED=$(grep -oP '"\K[0-9]+(?=:[0-9]+")' "${COMPOSE_DIR}/docker-compose.yml" 2>/dev/null | head -1)
+    # Port frontendu = mapowanie do :80 (nginx), nie API (:8000)
+    DETECTED=$(grep -oP '"\K[0-9]+(?=:80")' "${COMPOSE_DIR}/docker-compose.yml" 2>/dev/null | head -1)
     [ -n "$DETECTED" ] && APP_PORT="$DETECTED"
 fi
 APP_URL="http://localhost:${APP_PORT}"
@@ -178,22 +179,32 @@ for i in $(seq 1 45); do
 done
 
 prog 98 "Otwieram przeglądarkę..."
+[ -n "$PROG_FD" ] && exec 3>&-
+sleep 0.8
+
+log "Uruchamiam przeglądarkę: $APP_URL"
+run_browser() {
+    nohup "$@" "$APP_URL" </dev/null >> /tmp/promptmaster-browser.log 2>&1 &
+    disown
+}
+# --incognito: nie przywracaj poprzedniej sesji (np. #admin) – zawsze start na głównym ekranie
 if command -v chromium-browser &>/dev/null; then
-    chromium-browser --kiosk "$APP_URL" --noerrdialogs 2>/dev/null &
+    run_browser chromium-browser --kiosk --incognito --noerrdialogs --disable-session-crashed-bubble
 elif command -v chromium &>/dev/null; then
-    chromium --kiosk "$APP_URL" --noerrdialogs 2>/dev/null &
+    run_browser chromium --kiosk --incognito --noerrdialogs --disable-session-crashed-bubble
 elif command -v google-chrome &>/dev/null; then
-    google-chrome --kiosk "$APP_URL" --noerrdialogs 2>/dev/null &
+    run_browser google-chrome --kiosk --incognito --noerrdialogs --disable-session-crashed-bubble
 elif command -v firefox &>/dev/null; then
-    firefox -kiosk "$APP_URL" 2>/dev/null &
+    nohup firefox -kiosk "$APP_URL" </dev/null >> /tmp/promptmaster-browser.log 2>&1 &
+    disown
 else
-    xdg-open "$APP_URL" 2>/dev/null || sensible-browser "$APP_URL" 2>/dev/null || msg "Otwórz: $APP_URL"
+    xdg-open "$APP_URL" 2>/dev/null &
+    disown
 fi
 
-prog 100 "Gotowe."
-[ -n "$PROG_FD" ] && exec 3>&-
-log "Gotowe."
-[ -t 0 ] 2>/dev/null && read -r -p "Naciśnij Enter aby zamknąć..."
+sleep 1.5
+log "Gotowe. Zamykam terminal."
+exit 0
 LAUNCHER_EOF
     chmod +x "$LAUNCHER_SCRIPT"
     echo -e "${GREEN}✓ Utworzono start-app-fullscreen.sh${NC}"
